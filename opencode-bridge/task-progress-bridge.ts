@@ -1,24 +1,43 @@
 // Mirrors OpenCode's real session status into Mandara's built-in `progress`
-// plugin. The built-in bar chip animates at 33 ms (smooth spinner/shimmer)
+// plugin. The built-in bar chip animates at 33 ms (smooth breathing light)
 // and needs no shell patch or custom Wasm plugin.
 import { spawn } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFile } from 'node:fs/promises';
 
 const MANDARA = process.env.MANDARA_BIN || '/home/bedevere/.local/bin/mandara';
 const TASK = 'opencode';
+const TRACE = process.env.TASK_PROGRESS_TRACE === '1';
+const TRACE_LOG = '/tmp/opencode/tp-bridge-events.log';
+// Keep re-sending an identical command (a task may have been removed since),
+// but coalesce bursts from events that describe the same change, such as
+// `permission.asked` followed by `form.created`.
+const DEDUPE_MS = 250;
 
 let chain: Promise<void> = Promise.resolve();
 let tracked = '';
+let disposed = false;
+const lastSent = new Map<string, number>();
+let traceChain: Promise<void> = Promise.resolve();
 
 function run(words: string[]) {
-  // Always send: a task may have been removed since the identical command
-  // was last issued, and `progress start` must re-create it.
+  if (disposed) return;
+  const key = words.join(' ');
+  const now = Date.now();
+  if (now - (lastSent.get(key) ?? -Infinity) < DEDUPE_MS) return;
+  lastSent.set(key, now);
   chain = chain.then(
     () =>
       new Promise<void>((resolve) => {
+        if (disposed) return resolve();
         const child = spawn(MANDARA, ['msg', ...words], { stdio: 'ignore' });
-        child.on('error', () => resolve());
-        child.on('close', () => resolve());
+        child.on('error', (error) => {
+          if (TRACE) console.error(`task-progress-bridge: ${error.message}`);
+          resolve();
+        });
+        child.on('close', (code) => {
+          if (TRACE && code !== 0) console.error(`task-progress-bridge: ${key} exited ${code}`);
+          resolve();
+        });
       }),
   );
 }
@@ -38,14 +57,10 @@ function isAsk(p: any): boolean {
 }
 
 function trace(type: string, p: any) {
-  try {
-    appendFileSync(
-      '/tmp/opencode/tp-bridge-events.log',
-      `${new Date().toISOString()} ${type} ${JSON.stringify(p).slice(0, 1200)}\n`,
-    );
-  } catch {
-    // Best effort.
-  }
+  if (!TRACE) return;
+  const line = `${new Date().toISOString()} ${type} ${JSON.stringify(p).slice(0, 1200)}\n`;
+  // Async and serialised: logging must never block OpenCode's event loop.
+  traceChain = traceChain.then(() => appendFile(TRACE_LOG, line).catch(() => {}));
 }
 
 function handle(event: any) {
@@ -74,12 +89,15 @@ function handle(event: any) {
       break;
     case 'session.execution.succeeded':
       run(['progress', 'done', TASK, 'All green']);
+      tracked = '';
       break;
     case 'session.execution.failed':
       run(['progress', 'fail', TASK, 'Failed']);
+      tracked = '';
       break;
     case 'session.execution.interrupted':
       run(['progress', 'fail', TASK, 'Interrupted']);
+      tracked = '';
       break;
     case 'session.tool.failed':
       run(['progress', 'fail', TASK, 'Tool failed']);
@@ -96,13 +114,16 @@ export default {
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-          handle(event);
+          if (!disposed) handle(event);
         }
       } catch {
         // Server shutting down.
       }
     })();
-    return () => controller.abort();
+    return () => {
+      disposed = true;
+      controller.abort();
+    };
   },
   server: async () => ({}),
 };

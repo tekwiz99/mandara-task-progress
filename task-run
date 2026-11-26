@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Shorthand: task-run [-i ID] "Label" -- command [args...]
 set -euo pipefail
-here="$(cd "$(dirname "$0")" && pwd)"
+src="${BASH_SOURCE[0]}"
+here="${src%/*}"
+[[ "$here" == "$src" ]] && here="."
 id_args=()
 while [[ "${1:-}" == "-i" ]]; do
   (($# >= 2)) || { printf 'task-run: -i needs an id\n' >&2; exit 2; }

@@ -36,10 +36,11 @@ while [[ "${1:-}" == "-i" ]]; do
   shift 2
 done
 
+# One shell call and one jq call; `first(...)` replaces the head pipeline.
 current_percent() {
-  "$MANDARA" msg --json progress list 2>/dev/null \
-    | jq -r --arg id "$ID" '.data[] | select(.id == $id) | (.percent // 0) | floor' 2>/dev/null \
-    | head -1
+  local reply
+  reply="$("$MANDARA" msg --json progress list)" || die "cannot reach the shell at '$MANDARA'"
+  jq -er --arg id "$ID" 'first(.data[] | select(.id == $id) | (.percent // 0) | floor)' <<<"$reply" || die "no task '$ID'"
 }
 
 cmd="${1:-help}"
@@ -51,17 +52,16 @@ case "$cmd" in
     ;;
   set)
     value="${1:-}"
-    [[ "$value" =~ ^[0-9]+$ ]] && ((value >= 0 && value <= 100)) || die "percent must be 0..100"
-    if (($# >= 2)); then
-      "$MANDARA" msg progress set "$ID" "${value}%" "$2" >/dev/null
-    else
-      "$MANDARA" msg progress set "$ID" "${value}%" >/dev/null
-    fi
+    [[ "$value" =~ ^[0-9]+$ ]] || die "percent must be 0..100"
+    value=$((10#$value))
+    ((value >= 0 && value <= 100)) || die "percent must be 0..100"
+    args=("$MANDARA" msg progress set "$ID" "$value")
+    (($# >= 2)) && args+=("$2")
+    "${args[@]}" >/dev/null
     ;;
   step)
     pct="$(current_percent)"
-    [[ -n "$pct" ]] || die "no task '$ID'"
-    "$MANDARA" msg progress set "$ID" "${pct}%" "${1:-}" >/dev/null
+    "$MANDARA" msg progress set "$ID" "$pct" "${1:-}" >/dev/null
     ;;
   done)
     "$MANDARA" msg progress done "$ID" "${1:-Done}" >/dev/null
@@ -81,13 +81,22 @@ case "$cmd" in
     [[ "${1:-}" == "--" ]] && shift || true
     (($#)) || die "run needs a command after --"
     "$MANDARA" msg progress start "$ID" "$label" >/dev/null
-    if "$@"; then
-      "$MANDARA" msg progress done "$ID" "OK" >/dev/null
-    else
-      rc=$?
-      "$MANDARA" msg progress fail "$ID" "Failed ($rc)" >/dev/null
+    finished=0
+    finish() {
+      local rc=$?
+      trap - EXIT INT TERM
+      if ((rc == 0 && finished == 1)); then
+        "$MANDARA" msg progress done "$ID" "OK" >/dev/null || true
+      else
+        "$MANDARA" msg progress fail "$ID" "Failed ($rc)" >/dev/null || true
+      fi
       exit "$rc"
-    fi
+    }
+    trap finish EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    "$@" || exit $?
+    finished=1
     ;;
   help|-h|--help)
     usage
