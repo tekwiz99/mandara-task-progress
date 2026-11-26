@@ -73,7 +73,7 @@ default = false
 key = "animate"
 type = "bool"
 label = "Animate the running light"
-help = "Off shows a static indicator and stops the 250 ms redraw timer (reload the plugin after changing)"
+help = "Off shows a static indicator and stops the 250 ms redraw timer (applies live)"
 default = true
 
 [[settings]]

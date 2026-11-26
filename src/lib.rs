@@ -100,13 +100,14 @@ impl Phase {
         }
     }
 
-    fn label(self) -> String {
+    /// Plain English key: the host translates view text for us after render.
+    fn label(self) -> &'static str {
         match self {
-            Phase::Idle => host::translate("Idle"),
-            Phase::Running => host::translate("Running"),
-            Phase::Question => host::translate("Need confirm"),
-            Phase::Done => host::translate("Finished"),
-            Phase::Error => host::translate("Failed"),
+            Phase::Idle => "Idle",
+            Phase::Running => "Running",
+            Phase::Question => "Need confirm",
+            Phase::Done => "Finished",
+            Phase::Error => "Failed",
         }
     }
 }
@@ -436,7 +437,7 @@ fn bar() -> ui::View {
         let icon = t.add(K::Icon, "circle");
         t.node(icon).style.size = BAR_ICON_PX;
         t.tone(icon, Tone::Muted);
-        let label = t.text(&host::translate("Idle"), BAR_TEXT_PX);
+        let label = t.text("Idle", BAR_TEXT_PX);
         t.tone(label, Tone::Muted);
         vec![icon, label]
     } else {
@@ -462,26 +463,22 @@ fn panel() -> ui::View {
     let percentage = percent();
     let p = Phase::parse(&text_setting("state"));
     let label = text_setting("label");
-    let title = if label.is_empty() {
-        host::translate("No active task")
-    } else {
-        label
-    };
+    let title: &str = if label.is_empty() { "No active task" } else { &label };
 
     let icon = t.add(K::Icon, p.icon());
     t.node(icon).style.size = ICON_PX;
     t.tone(icon, p.tone());
 
-    let name = t.text(&title, LABEL_PX);
+    let name = t.text(title, LABEL_PX);
     t.bold(name);
     t.grow(name);
 
-    let chip = t.text(&p.label(), CHIP_PX);
+    let chip = t.text(p.label(), CHIP_PX);
     t.tone(chip, p.tone());
     let header = t.row(ROW_GAP, &[icon, name, chip]);
 
     let hero = pct_label(&mut t, p, HERO_PX, percentage);
-    let caption = t.text(&host::translate("complete"), CAPTION_PX);
+    let caption = t.text("complete", CAPTION_PX);
     t.tone(caption, Tone::Muted);
     let hero_row = t.row(ROW_GAP, &[hero, caption]);
 
@@ -491,27 +488,19 @@ fn panel() -> ui::View {
     t.grow(light);
 
     let mut rows = Vec::with_capacity(3);
-    let elapsed_row = line(&mut t, &host::translate("Elapsed"), &elapsed(now));
+    let elapsed_row = line(&mut t, "Elapsed", &elapsed(now));
     rows.push(elapsed_row);
     let step = text_setting("step");
     if !step.is_empty() {
-        rows.push(line(&mut t, &host::translate("Step"), &step));
+        rows.push(line(&mut t, "Step", &step));
     }
     if DETAILS.get() {
-        rows.push(line(
-            &mut t,
-            &host::translate("Progress"),
-            &format!("{:.0}%", percentage),
-        ));
+        rows.push(line(&mut t, "Progress", &format!("{:.0}%", percentage)));
     }
     let group = t.group(&rows);
 
-    let toggle_label = if DETAILS.get() {
-        host::translate("Hide details")
-    } else {
-        host::translate("Show details")
-    };
-    let toggle = t.add(K::Button, &toggle_label);
+    let toggle_label = if DETAILS.get() { "Hide details" } else { "Show details" };
+    let toggle = t.add(K::Button, toggle_label);
     t.node(toggle).action = "details".into();
 
     let mut kids = vec![header, hero_row, bar, light];
@@ -521,14 +510,11 @@ fn panel() -> ui::View {
     kids.push(group);
     kids.push(toggle);
     if DETAILS.get() {
-        let hint = t.text(
-            &host::translate("Update it with task-progress set <percent>"),
-            CAPTION_PX,
-        );
+        let hint = t.text("Update it with task-progress set <percent>", CAPTION_PX);
         t.tone(hint, Tone::Muted);
         kids.push(hint);
         // A key for the state colors, using the theme's own palette.
-        let key_caption = t.text(&host::translate("Status colors"), CAPTION_PX);
+        let key_caption = t.text("Status colors", CAPTION_PX);
         t.tone(key_caption, Tone::Muted);
         kids.push(key_caption);
         let mut key = Vec::with_capacity(4);
@@ -538,7 +524,7 @@ fn panel() -> ui::View {
             ("Finished", Tone::Success),
             ("Failed", Tone::Error),
         ] {
-            let label = t.text(&host::translate(name), CHIP_PX);
+            let label = t.text(name, CHIP_PX);
             t.tone(label, tone);
             key.push(label);
         }
@@ -564,19 +550,15 @@ fn sidebar() -> ui::View {
     let percentage = percent();
     let p = Phase::parse(&text_setting("state"));
     let label = text_setting("label");
-    let name = if label.is_empty() {
-        host::translate("No active task")
-    } else {
-        label
-    };
-    let title = t.text(&name, LABEL_PX);
+    let name: &str = if label.is_empty() { "No active task" } else { &label };
+    let title = t.text(name, LABEL_PX);
     t.bold(title);
     let value = pct_label(&mut t, p, 0.0, percentage);
     let spacer = t.add(K::Spacer, "");
     let head = t.row(ROW_GAP, &[title, spacer, value]);
     let bar = meter(&mut t, p, 0.0, BAR_METER_H, percentage);
     t.grow(bar);
-    let caption = t.text(&p.label(), CAPTION_PX);
+    let caption = t.text(p.label(), CAPTION_PX);
     t.tone(caption, Tone::Muted);
     let root = t.column(TIGHT_GAP, &[head, bar, caption]);
     t.view(root)

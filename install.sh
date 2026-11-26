@@ -7,10 +7,11 @@ here="${src%/*}"
 cd "$here"
 
 dest="${MANDARA_PLUGIN_DIR:-$HOME/.local/share/mandara/plugins-dev/task-progress}"
-cargo build --release --target wasm32-wasip2
+profile="${CARGO_PROFILE:-release}"
+cargo build --profile "$profile" --target wasm32-wasip2
 mkdir -p "$dest/locales"
 cp plugin.toml "$dest/plugin.toml"
-cp target/wasm32-wasip2/release/task_progress.wasm "$dest/plugin.wasm"
+cp "target/wasm32-wasip2/$profile/task_progress.wasm" "$dest/plugin.wasm"
 cp locales/*.toml "$dest/locales/"
 mkdir -p "$HOME/.local/bin"
 cp task-progress "$HOME/.local/bin/task-progress"

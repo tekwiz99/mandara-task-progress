@@ -15,3 +15,9 @@ wit-bindgen = { version = "0.63", default-features = false, features = ["macros"
 opt-level = "s"
 lto = true
 strip = true
+
+# Local hot-install iterations: release code without the fat-LTO cost.
+[profile.fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 8

@@ -320,7 +320,6 @@ world plugin {
     use ui.{context, view, event, hit};
     import host;
     import broker;
-    import storage;
 
     /// Called first, before `init`: return the features you use. Loading
     /// stops with a clear message when the host lacks one, so a plugin

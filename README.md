@@ -9,11 +9,11 @@ original standalone version, kept for reference and manual tasks.
 
 ## The indicator
 
-The bar chip is always resident and uses one visual language:
+The bar chip uses one visual language:
 
 | State | Bar |
 |---|---|
-| idle | quiet dim row of eight cells |
+| idle | quiet dim row of eight cells (upstream v0.40: only with `show_when_idle` on; the local `feat/task-progress-animated` branch keeps it always resident) |
 | running | soft breathing brightness ripple, cells stay in place |
 | done | solid green cells for 30 s |
 | failed | solid red cells for 30 s |
@@ -73,27 +73,31 @@ producer — CLI-reported tasks appear beside it.
 
 ## Standalone Wasm plugin (reference)
 
-`src/`, `wit/`, `plugin.toml` and the older CLI flow are the original
-third-party plugin. A sandboxed Wasm plugin has no filesystem, network or
-subprocess access, so it reads progress from its own settings via
-`host::setting()`; the companion script writes those settings with
-`mandara msg config set`:
+`src/`, `wit/`, `plugin.toml` are the original third-party plugin, kept for
+reference. A sandboxed Wasm plugin has no filesystem, network or subprocess
+access, so it reads progress from its own settings via `host::setting()` and
+needs a companion script to write them:
 
 ```
-task-progress set 42
-  └─ mandara msg config set /plugins/settings/task-progress/percent 42
-       └─ plugin render → host::setting("percent") == "42"
+script → mandara msg config set /plugins/settings/task-progress/percent 42
+       → plugin render → host::setting("percent") == "42"
 ```
 
-Mandara clamps third-party `refresh-ms` to 250 ms, which is why the animated
-light now lives in the built-in plugin where a 33 ms frame is available.
+The shipped `task-progress` CLI does **not** use this plugin: it drives
+Mandara's built-in `progress` plugin with `mandara msg progress …`.
+
+Third-party `refresh-ms` is clamped to 33 ms at full motion (250 ms with
+reduce motion on), but the animated light lives in the built-in plugin so it
+can use that frame without a Wasm boundary on every render.
 
 ## Mandara patch
 
-The shell patch is on `feat/task-progress-animated` of `tekwiz99/mandara`
-(one commit on top of upstream v0.38.8), with PR #252 open against
-`theHamdiz/mandara:main`. Checks: `cargo check`, `clippy -D warnings`,
-`cargo test -p mandara-i18n`, `no_hardcoded`, and a release build.
+PR #252 was merged and shipped in upstream v0.40.0. The local
+`feat/task-progress-animated` branch adds one further tweak on top: the idle
+row stays resident instead of being gated behind `show_when_idle`. Checks:
+`cargo check`, `clippy -D warnings`, `cargo test -p mandara-i18n`,
+`no_hardcoded`, and a release build. Maintenance work happens on the local
+`perf/progress-hot-path` branch, based on the v0.40.0 tag.
 
 ## Install
 
