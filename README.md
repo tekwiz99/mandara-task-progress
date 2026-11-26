@@ -1,5 +1,13 @@
 # Task progress — a Mandara Shell plugin
 
+Repository: https://github.com/tekwiz99/mandara-task-progress (`mandara-plugin` topic).
+
+The current desktop setup uses Mandara's built-in `progress` plugin with the
+OpenCode bridge in `opencode-bridge/`. The Wasm plugin in this repo is the
+original standalone version, kept for reference and manual tasks. The local
+Mandara patches (resident idle light, breathing pulse, solid green/red done
+state) live on branch `feat/task-progress-animated` of `tekwiz99/mandara`.
+
 A resident bar item with just the animated running light by default: an
 eight-cell Knight-Rider scanner with a fading trail, matching OpenCode's
 "blocks" spinner. The meter and the numeric percentage are
