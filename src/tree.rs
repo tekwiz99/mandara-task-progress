@@ -20,9 +20,16 @@ fn style() -> ui::Style {
     }
 }
 
-#[derive(Default)]
 pub struct Tree {
     nodes: Vec<ui::Node>,
+}
+
+impl Default for Tree {
+    /// A panel builds ~20 nodes; reserve once instead of growing the arena
+    /// several times on every render.
+    fn default() -> Self {
+        Self { nodes: Vec::with_capacity(32) }
+    }
 }
 
 impl Tree {
