@@ -1,9 +1,10 @@
 //! Mandara plugin: a running-light progress bar for long tasks.
 //!
 //! The plugin is sandboxed, so progress arrives through its own settings:
-//! `task-progress start|set|step|done|fail|reset` calls `mandara msg config set`
-//! behind the scenes, and `host::setting` reads the values on the next render.
-//! The bar item shows a small chase light, a real meter and the percentage;
+//! the companion CLI writes them with `mandara msg config set`, and
+//! `host::setting` reads them on the next render. The live desktop now uses
+//! Mandara's built-in `progress` plugin instead; this Wasm plugin is kept as
+//! a reference. The bar item shows a small chase light, a real meter and the percentage;
 //! the panel holds the details. A completion toast uses the broker.
 
 mod tree;
@@ -59,11 +60,6 @@ const METER_H: f32 = 12.0;
 const CHASE_H: f32 = 14.0;
 const CHIP_PX: f32 = 11.0;
 const ICON_PX: f32 = 16.0;
-/// The panel's content width (360 px minus its 16 px padding on each side).
-/// Marks are sized against this because a growing canvas reports width 0 to
-/// the plugin.
-const PANEL_CONTENT_W: f32 = 328.0;
-
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Phase {
     Idle,
@@ -126,12 +122,12 @@ thread_local! {
     static NOTIFIED: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
-fn seen_running() -> String {
-    SEEN_RUNNING.with(|s| s.borrow().clone())
+fn is_seen_running(key: &str) -> bool {
+    SEEN_RUNNING.with(|s| s.borrow().as_str() == key)
 }
 
-fn notified() -> String {
-    NOTIFIED.with(|s| s.borrow().clone())
+fn is_notified(key: &str) -> bool {
+    NOTIFIED.with(|s| s.borrow().as_str() == key)
 }
 
 fn digit(c: u8) -> i32 {
@@ -164,14 +160,25 @@ fn rgb(hex: &str) -> [f32; 3] {
 /// some Looks), "running" uses the neutral tone so the three states stay
 /// distinguishable. With a blue-primary theme it is blue automatically.
 fn running_tone(theme: &Palette) -> Tone {
-    let a = rgb(&theme.primary);
-    let b = rgb(&theme.warning);
-    let distance = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
-    if distance < 0.18 {
-        Tone::Normal
-    } else {
-        Tone::Accent
+    thread_local! {
+        static CACHE: RefCell<Option<(bool, String, String, Tone)>> = const { RefCell::new(None) };
     }
+    CACHE.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        if let Some((dark, primary, warning, tone)) = cache.as_ref()
+            && *dark == theme.dark
+            && primary == &theme.primary
+            && warning == &theme.warning
+        {
+            return *tone;
+        }
+        let a = rgb(&theme.primary);
+        let b = rgb(&theme.warning);
+        let distance = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+        let tone = if distance < 0.18 { Tone::Normal } else { Tone::Accent };
+        *cache = Some((theme.dark, theme.primary.clone(), theme.warning.clone(), tone));
+        tone
+    })
 }
 
 /// A setting's JSON text for a string key: `"value"` -> `value`.
@@ -266,12 +273,11 @@ fn duration(ms: u64) -> String {
     }
 }
 
-fn elapsed() -> String {
+fn elapsed(now: u64) -> String {
     let started = num_setting("started") as u64;
     if started == 0 {
         return "—".to_string();
     }
-    let now = host::now_unix_ms();
     duration(now.saturating_sub(started))
 }
 
@@ -306,7 +312,8 @@ fn trail_alpha(distance: usize) -> f32 {
 
 /// The chase light, styled after OpenCode's "blocks" spinner: small dim
 /// squares with a bright block and a fading trail scanning back and forth.
-fn marks(p: Phase, count: usize, now: u64, _w: f32, _h: f32) -> Vec<ui::Mark> {
+fn marks(p: Phase, count: usize, now: u64) -> Vec<ui::Mark> {
+    let tone = p.tone();
     // Static mode: one steady lit cell, no timer and no motion.
     if !flag_setting("animate") {
         let slot = 0.92 / count as f32;
@@ -318,7 +325,6 @@ fn marks(p: Phase, count: usize, now: u64, _w: f32, _h: f32) -> Vec<ui::Mark> {
                 y: 0.19,
                 width,
                 height: 0.62,
-                tone: p.tone(),
                 opacity: if p == Phase::Running && i == 0 {
                     1.0
                 } else if p == Phase::Idle {
@@ -327,6 +333,7 @@ fn marks(p: Phase, count: usize, now: u64, _w: f32, _h: f32) -> Vec<ui::Mark> {
                     0.6
                 },
                 radius: 0.0,
+                tone,
             })
             .collect();
     }
@@ -356,7 +363,7 @@ fn marks(p: Phase, count: usize, now: u64, _w: f32, _h: f32) -> Vec<ui::Mark> {
             y: (1.0 - height) * 0.5,
             width,
             height,
-            tone: p.tone(),
+            tone,
             opacity,
             radius: 0.0,
         });
@@ -364,10 +371,9 @@ fn marks(p: Phase, count: usize, now: u64, _w: f32, _h: f32) -> Vec<ui::Mark> {
     out
 }
 
-fn chase(t: &mut Tree, p: Phase, count: usize, w: f32, h: f32) -> u32 {
+fn chase(t: &mut Tree, p: Phase, count: usize, w: f32, h: f32, now: u64) -> u32 {
     let i = t.add(K::Canvas, "");
-    let mark_w = if w == 0.0 { PANEL_CONTENT_W } else { w };
-    t.node(i).marks = marks(p, count, host::now_unix_ms(), mark_w, h);
+    t.node(i).marks = marks(p, count, now);
     t.node(i).style.width = w;
     t.node(i).style.height = h;
     i
@@ -376,9 +382,9 @@ fn chase(t: &mut Tree, p: Phase, count: usize, w: f32, h: f32) -> u32 {
 /// A fixed-width meter for the bar. The host's `meter` node always stretches
 /// to its parent, which would push the percentage off the bar, so the compact
 /// version is drawn as two canvas marks instead.
-fn mini_meter(t: &mut Tree, p: Phase, w: f32, h: f32) -> u32 {
+fn mini_meter(t: &mut Tree, p: Phase, w: f32, h: f32, percentage: f32) -> u32 {
     let i = t.add(K::Canvas, "");
-    let fill = percent() / 100.0;
+    let fill = percentage / 100.0;
     t.node(i).marks = vec![
         ui::Mark {
             shape: Shape::Rect,
@@ -406,17 +412,17 @@ fn mini_meter(t: &mut Tree, p: Phase, w: f32, h: f32) -> u32 {
     i
 }
 
-fn meter(t: &mut Tree, p: Phase, w: f32, h: f32) -> u32 {
+fn meter(t: &mut Tree, p: Phase, w: f32, h: f32, percentage: f32) -> u32 {
     let i = t.add(K::Meter, "");
-    t.node(i).value = percent() / 100.0;
+    t.node(i).value = percentage / 100.0;
     t.node(i).style.width = w;
     t.node(i).style.height = h;
     t.tone(i, p.tone());
     i
 }
 
-fn pct_label(t: &mut Tree, p: Phase, size: f32) -> u32 {
-    let i = t.text(&format!("{:.0}%", percent()), size);
+fn pct_label(t: &mut Tree, p: Phase, size: f32, percentage: f32) -> u32 {
+    let i = t.text(&format!("{:.0}%", percentage), size);
     t.bold(i);
     t.tone(i, p.tone());
     i
@@ -434,12 +440,14 @@ fn bar() -> ui::View {
         t.tone(label, Tone::Muted);
         vec![icon, label]
     } else {
-        let mut kids = vec![chase(&mut t, p, BAR_DOTS, BAR_CHASE_W, BAR_CHASE_H)];
+        let now = host::now_unix_ms();
+        let percentage = percent();
+        let mut kids = vec![chase(&mut t, p, BAR_DOTS, BAR_CHASE_W, BAR_CHASE_H, now)];
         if flag_setting("show_bar_meter") {
-            kids.push(mini_meter(&mut t, p, BAR_METER_W, BAR_METER_H));
+            kids.push(mini_meter(&mut t, p, BAR_METER_W, BAR_METER_H, percentage));
         }
         if flag_setting("show_percent") {
-            kids.push(pct_label(&mut t, p, BAR_TEXT_PX));
+            kids.push(pct_label(&mut t, p, BAR_TEXT_PX, percentage));
         }
         kids
     };
@@ -450,6 +458,8 @@ fn bar() -> ui::View {
 /// Detail panel: one hero value, the chase, and a short set of facts.
 fn panel() -> ui::View {
     let mut t = Tree::default();
+    let now = host::now_unix_ms();
+    let percentage = percent();
     let p = Phase::parse(&text_setting("state"));
     let label = text_setting("label");
     let title = if label.is_empty() {
@@ -470,18 +480,18 @@ fn panel() -> ui::View {
     t.tone(chip, p.tone());
     let header = t.row(ROW_GAP, &[icon, name, chip]);
 
-    let hero = pct_label(&mut t, p, HERO_PX);
+    let hero = pct_label(&mut t, p, HERO_PX, percentage);
     let caption = t.text(&host::translate("complete"), CAPTION_PX);
     t.tone(caption, Tone::Muted);
     let hero_row = t.row(ROW_GAP, &[hero, caption]);
 
-    let bar = meter(&mut t, p, 0.0, METER_H);
+    let bar = meter(&mut t, p, 0.0, METER_H, percentage);
     t.grow(bar);
-    let light = chase(&mut t, p, PANEL_DOTS, 0.0, CHASE_H);
+    let light = chase(&mut t, p, PANEL_DOTS, 0.0, CHASE_H, now);
     t.grow(light);
 
     let mut rows = Vec::with_capacity(3);
-    let elapsed_row = line(&mut t, &host::translate("Elapsed"), &elapsed());
+    let elapsed_row = line(&mut t, &host::translate("Elapsed"), &elapsed(now));
     rows.push(elapsed_row);
     let step = text_setting("step");
     if !step.is_empty() {
@@ -491,7 +501,7 @@ fn panel() -> ui::View {
         rows.push(line(
             &mut t,
             &host::translate("Progress"),
-            &format!("{:.0}%", percent()),
+            &format!("{:.0}%", percentage),
         ));
     }
     let group = t.group(&rows);
@@ -551,6 +561,7 @@ fn line(t: &mut Tree, label: &str, value: &str) -> u32 {
 /// Sidebar card: a quiet summary of the same data.
 fn sidebar() -> ui::View {
     let mut t = Tree::default();
+    let percentage = percent();
     let p = Phase::parse(&text_setting("state"));
     let label = text_setting("label");
     let name = if label.is_empty() {
@@ -560,10 +571,10 @@ fn sidebar() -> ui::View {
     };
     let title = t.text(&name, LABEL_PX);
     t.bold(title);
-    let value = pct_label(&mut t, p, 0.0);
+    let value = pct_label(&mut t, p, 0.0, percentage);
     let spacer = t.add(K::Spacer, "");
     let head = t.row(ROW_GAP, &[title, spacer, value]);
-    let bar = meter(&mut t, p, 0.0, BAR_METER_H);
+    let bar = meter(&mut t, p, 0.0, BAR_METER_H, percentage);
     t.grow(bar);
     let caption = t.text(&p.label(), CAPTION_PX);
     t.tone(caption, Tone::Muted);
@@ -581,10 +592,10 @@ fn maybe_notify(p: Phase) {
         return;
     }
     let key = task_key(&text_setting("label"));
-    if seen_running() != key || notified() == key {
+    if !is_seen_running(&key) || is_notified(&key) {
         return;
     }
-    NOTIFIED.replace(key.clone());
+    NOTIFIED.replace(key);
     let label = text_setting("label");
     let body = if label.is_empty() {
         host::translate("Your task is done")
@@ -646,7 +657,7 @@ impl Guest for Plugin {
     }
 
     fn on_call(_caller: String, operation: String, _payload: String) -> Result<String, String> {
-        Err(format!("no operation {operation}"))
+        Err(operation)
     }
 }
 

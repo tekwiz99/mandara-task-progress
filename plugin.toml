@@ -1,6 +1,6 @@
 id = "task-progress"
 name = "Task progress"
-description = "A running-light progress bar for long tasks, driven by the task-progress CLI"
+description = "A running-light progress bar for long tasks, driven by plugin settings (reference plugin; the live desktop uses Mandara's built-in progress plugin)"
 author = "Bedevere"
 version = "0.1.0"
 zone = "right"
@@ -12,8 +12,8 @@ permissions = ["notifications.send"]
 width = 360
 height = 400
 
-# The CLI writes these through `mandara msg config set`; the plugin reads them
-# with host::setting(). Studio shows the same controls on the plugin's page.
+# A companion script writes these through `mandara msg config set`; the plugin
+# reads them with host::setting(). Studio shows the same controls on its page.
 
 [[settings]]
 key = "label"
@@ -45,7 +45,7 @@ unit = "%"
 key = "step"
 type = "text"
 label = "Step"
-help = "Optional step label (e.g. 3/7) or the question asked by `task-progress ask`"
+help = "Optional step label (e.g. 3/7) set with `task-progress step`"
 default = ""
 
 [[settings]]
