@@ -1,0 +1,25 @@
+id = "opencode"
+name = "OpenCode"
+description = "OpenCode's palette adapted to Mandara; its running blue is the primary seed."
+
+[dark]
+surface = "#0a0a0a"
+surface_variant = "#1e1e1e"
+on_surface = "#eeeeee"
+primary = "#5c9cf5"
+secondary = "#9d7cd8"
+tertiary = "#fab283"
+error = "#e06c75"
+warning = "#f5a742"
+success = "#7fd88f"
+
+[light]
+surface = "#ffffff"
+surface_variant = "#f5f5f5"
+on_surface = "#1a1a1a"
+primary = "#3b7dd8"
+secondary = "#7b5bb6"
+tertiary = "#b0851f"
+error = "#d1383d"
+warning = "#d68c27"
+success = "#3d9a57"

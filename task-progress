@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Companion CLI for the Mandara "task-progress" plugin.
+#
+# The plugin is a sandboxed Wasm component: it cannot read files or run
+# commands. We bridge that gap by writing its own settings over Mandara's IPC,
+# exactly as Studio does. The plugin reads them on its next render.
+set -euo pipefail
+
+PREFIX=/plugins/settings/task-progress
+MANDARA="${MANDARA_BIN:-mandara}"
+
+usage() {
+  cat <<'EOF'
+Usage: task-progress <command> [args]
+
+  start "Build firmware" [step]   begin a task at 0%
+  set <0..100>                    set progress
+  step "3/7"                      change the step label
+  ask "Approve the build?"        pause on a question (yellow light)
+  done                            mark complete (100%, all green) and toast once
+  fail                            mark as failed
+  reset                           clear the task back to idle
+  status                          print the current state
+
+Examples:
+  task-progress start "Compiling kernel" 1/4
+  task-progress set 55
+  task-progress step 3/4
+  task-progress done
+
+Mandara's CLI can be selected with MANDARA_BIN=/path/to/mandara.
+EOF
+}
+
+die() { printf 'task-progress: %s\n' "$*" >&2; exit 2; }
+
+# Quote a shell argument as a JSON string (jq handles every escape).
+jstr() { jq -Rn --arg s "$1" '$s'; }
+
+put() { "$MANDARA" msg config set "$PREFIX/$1" "$2" >/dev/null; }
+
+case "${1:-help}" in
+  start)
+    label="${2:-Task}"
+    step="${3:-}"
+    put label "$(jstr "$label")"
+    put step "$(jstr "$step")"
+    put percent 0
+    put started "$(date +%s%3N)"
+    put state "$(jstr running)"
+    ;;
+  set)
+    value="${2:-}"
+    [[ "$value" =~ ^[0-9]+$ ]] || die "percent must be a whole number from 0 to 100"
+    ((value >= 0 && value <= 100)) || die "percent must be from 0 to 100"
+    put percent "$value"
+    ;;
+  step)
+    put step "$(jstr "${2:-}")"
+    ;;
+  ask|question)
+    put step "$(jstr "${2:-}")"
+    put state "$(jstr question)"
+    ;;
+  done)
+    put percent 100
+    put step "$(jstr "")"
+    put state "$(jstr done)"
+    ;;
+  fail)
+    put state "$(jstr error)"
+    ;;
+  reset)
+    put state "$(jstr idle)"
+    put percent 0
+    put label "$(jstr "")"
+    put step "$(jstr "")"
+    put started 0
+    ;;
+  status)
+    "$MANDARA" msg --json config get "$PREFIX" | jq -r '
+      (.data // .) as $s |
+      "label: \($s.label // "")\nstate: \($s.state // "idle")\npercent: \($s.percent // 0)%\nstep: \($s.step // "")"
+    '
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage >&2
+    die "unknown command: $1"
+    ;;
+esac

@@ -1,0 +1,88 @@
+id = "task-progress"
+name = "Task progress"
+description = "A running-light progress bar for long tasks, driven by the task-progress CLI"
+author = "Bedevere"
+version = "0.1.0"
+zone = "right"
+entry = "plugin.wasm"
+# Only used for the completion toast, and only after you grant it in Studio.
+permissions = ["notifications.send"]
+
+[panel]
+width = 360
+height = 400
+
+# The CLI writes these through `mandara msg config set`; the plugin reads them
+# with host::setting(). Studio shows the same controls on the plugin's page.
+
+[[settings]]
+key = "label"
+type = "text"
+label = "Task name"
+help = "Set by `task-progress start`"
+default = ""
+
+[[settings]]
+key = "state"
+type = "choice"
+label = "State"
+help = "Set by the task-progress CLI"
+default = "idle"
+choices = ["idle", "running", "question", "done", "error"]
+
+[[settings]]
+key = "percent"
+type = "number"
+label = "Progress"
+help = "Set by `task-progress set`"
+default = 0
+min = 0
+max = 100
+step = 1
+unit = "%"
+
+[[settings]]
+key = "step"
+type = "text"
+label = "Step"
+help = "Optional step label (e.g. 3/7) or the question asked by `task-progress ask`"
+default = ""
+
+[[settings]]
+key = "started"
+type = "number"
+label = "Started at (ms)"
+help = "Unix milliseconds, written by `task-progress start`"
+default = 0
+
+[[settings]]
+key = "show_percent"
+type = "bool"
+label = "Percentage in bar"
+help = "Show the numeric percentage beside the running light (off: the light is enough)"
+default = false
+
+[[settings]]
+key = "show_bar_meter"
+type = "bool"
+label = "Meter in bar"
+help = "Show a small progress pill in the bar as well (the panel always has a meter)"
+default = false
+
+[[settings]]
+key = "animate"
+type = "bool"
+label = "Animate the running light"
+help = "Off shows a static indicator and stops the 250 ms redraw timer (reload the plugin after changing)"
+default = true
+
+[[settings]]
+key = "notify_done"
+type = "bool"
+label = "Notify on completion"
+help = "Post a toast when a running task reaches 100%, if notifications.send is granted"
+default = true
+
+[i18n.zh]
+name = "任务进度"
+description = "由 task-progress 命令行驱动的运行灯任务进度条"
