@@ -247,17 +247,19 @@ struct Settings {
     now: u64,
 }
 
-fn snapshot() -> Settings {
+fn snapshot(surface: &Surface) -> Settings {
+    let bar = matches!(surface, Surface::Bar);
+    let panel = matches!(surface, Surface::Panel);
     Settings {
         state: text_setting("state"),
         label: text_setting("label"),
-        step: text_setting("step"),
+        step: if panel { text_setting("step") } else { String::new() },
         percent: (num_setting("percent") as f32).clamp(0.0, 100.0),
         started: num_setting("started") as u64,
-        animate: flag_setting("animate"),
-        show_percent: flag_setting("show_percent"),
-        show_bar_meter: flag_setting("show_bar_meter"),
-        notify_done: flag_setting("notify_done"),
+        animate: if bar || panel { flag_setting("animate") } else { false },
+        show_percent: if bar { flag_setting("show_percent") } else { false },
+        show_bar_meter: if bar { flag_setting("show_bar_meter") } else { false },
+        notify_done: if bar { flag_setting("notify_done") } else { false },
         now: host::now_unix_ms(),
     }
 }
@@ -632,7 +634,7 @@ impl Guest for Plugin {
     }
 
     fn render(theme: Palette, context: ui::Context) -> Option<ui::View> {
-        let s = snapshot();
+        let s = snapshot(&context.surface);
         RUN_TONE.set(running_tone(&theme));
         match context.surface {
             Surface::Bar => {
