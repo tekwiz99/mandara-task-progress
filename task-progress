@@ -1,93 +1,99 @@
 #!/usr/bin/env bash
-# Companion CLI for the Mandara "task-progress" plugin.
-#
-# The plugin is a sandboxed Wasm component: it cannot read files or run
-# commands. We bridge that gap by writing its own settings over Mandara's IPC,
-# exactly as Studio does. The plugin reads them on its next render.
+# General-purpose progress CLI for Mandara's built-in `progress` plugin.
+# Any script, build or agent can report here; the bar chip is shared.
 set -euo pipefail
 
-PREFIX=/plugins/settings/task-progress
 MANDARA="${MANDARA_BIN:-mandara}"
+ID="${TASK_ID:-task}"
 
 usage() {
   cat <<'EOF'
-Usage: task-progress <command> [args]
+Usage: task-progress [-i ID] <command> [args...]
 
-  start "Build firmware" [step]   begin a task at 0%
-  set <0..100>                    set progress
-  step "3/7"                      change the step label
-  ask "Approve the build?"        pause on a question (yellow light)
-  done                            mark complete (100%, all green) and toast once
-  fail                            mark as failed
-  reset                           clear the task back to idle
-  status                          print the current state
+  start "Label"               begin a task (indeterminate running light)
+  set <0..100> [label]        set progress
+  step "3/7"                  change only the label, keeping progress
+  done ["message"]            finish (solid green light)
+  fail ["message"]            fail (solid red light)
+  reset                       remove the task from the bar
+  list                        print every task as JSON
+  run "Label" -- cmd…         wrap any command with start/done/fail
 
+The default id is "task"; use -i ID or TASK_ID=ID for another task.
 Examples:
-  task-progress start "Compiling kernel" 1/4
-  task-progress set 55
-  task-progress step 3/4
-  task-progress done
-
-Mandara's CLI can be selected with MANDARA_BIN=/path/to/mandara.
+  task-progress -i build start "Compiling"
+  task-progress -i build set 40 "Compiling: 2/5"
+  task-progress -i build done "All green"
+  task-progress -i verify run "Running tests" -- cargo test --workspace
 EOF
 }
 
 die() { printf 'task-progress: %s\n' "$*" >&2; exit 2; }
 
-# Quote a shell argument as a JSON string (jq handles every escape).
-jstr() { jq -Rn --arg s "$1" '$s'; }
+while [[ "${1:-}" == "-i" ]]; do
+  (($# >= 2)) || die "-i needs an id"
+  ID="$2"
+  shift 2
+done
 
-put() { "$MANDARA" msg config set "$PREFIX/$1" "$2" >/dev/null; }
+current_percent() {
+  "$MANDARA" msg --json progress list 2>/dev/null \
+    | jq -r --arg id "$ID" '.data[] | select(.id == $id) | (.percent // 0) | floor' 2>/dev/null \
+    | head -1
+}
 
-case "${1:-help}" in
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
   start)
-    label="${2:-Task}"
-    step="${3:-}"
-    put label "$(jstr "$label")"
-    put step "$(jstr "$step")"
-    put percent 0
-    put started "$(date +%s%3N)"
-    put state "$(jstr running)"
+    "$MANDARA" msg progress start "$ID" "${1:-Task}" >/dev/null
     ;;
   set)
-    value="${2:-}"
-    [[ "$value" =~ ^[0-9]+$ ]] || die "percent must be a whole number from 0 to 100"
-    ((value >= 0 && value <= 100)) || die "percent must be from 0 to 100"
-    put percent "$value"
+    value="${1:-}"
+    [[ "$value" =~ ^[0-9]+$ ]] && ((value >= 0 && value <= 100)) || die "percent must be 0..100"
+    if (($# >= 2)); then
+      "$MANDARA" msg progress set "$ID" "${value}%" "$2" >/dev/null
+    else
+      "$MANDARA" msg progress set "$ID" "${value}%" >/dev/null
+    fi
     ;;
   step)
-    put step "$(jstr "${2:-}")"
-    ;;
-  ask|question)
-    put step "$(jstr "${2:-}")"
-    put state "$(jstr question)"
+    pct="$(current_percent)"
+    [[ -n "$pct" ]] || die "no task '$ID'"
+    "$MANDARA" msg progress set "$ID" "${pct}%" "${1:-}" >/dev/null
     ;;
   done)
-    put percent 100
-    put step "$(jstr "")"
-    put state "$(jstr done)"
+    "$MANDARA" msg progress done "$ID" "${1:-Done}" >/dev/null
     ;;
   fail)
-    put state "$(jstr error)"
+    "$MANDARA" msg progress fail "$ID" "${1:-Failed}" >/dev/null
     ;;
   reset)
-    put state "$(jstr idle)"
-    put percent 0
-    put label "$(jstr "")"
-    put step "$(jstr "")"
-    put started 0
+    "$MANDARA" msg progress remove "$ID" >/dev/null 2>&1 || true
     ;;
-  status)
-    "$MANDARA" msg --json config get "$PREFIX" | jq -r '
-      (.data // .) as $s |
-      "label: \($s.label // "")\nstate: \($s.state // "idle")\npercent: \($s.percent // 0)%\nstep: \($s.step // "")"
-    '
+  list)
+    "$MANDARA" msg --json progress list | jq -c '.data'
+    ;;
+  run)
+    label="${1:-Task}"
+    shift || true
+    [[ "${1:-}" == "--" ]] && shift || true
+    (($#)) || die "run needs a command after --"
+    "$MANDARA" msg progress start "$ID" "$label" >/dev/null
+    if "$@"; then
+      "$MANDARA" msg progress done "$ID" "OK" >/dev/null
+    else
+      rc=$?
+      "$MANDARA" msg progress fail "$ID" "Failed ($rc)" >/dev/null
+      exit "$rc"
+    fi
     ;;
   help|-h|--help)
     usage
     ;;
   *)
     usage >&2
-    die "unknown command: $1"
+    die "unknown command: $cmd"
     ;;
 esac

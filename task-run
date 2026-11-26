@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Shorthand: task-run [-i ID] "Label" -- command [args...]
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+id_args=()
+while [[ "${1:-}" == "-i" ]]; do
+  (($# >= 2)) || { printf 'task-run: -i needs an id\n' >&2; exit 2; }
+  id_args=(-i "$2")
+  shift 2
+done
+exec "$here/task-progress" "${id_args[@]}" run "$@"
