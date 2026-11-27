@@ -57,19 +57,31 @@ The default id is `task`; use `-i ID` or `TASK_ID=ID` for concurrent tasks.
 ## Live sync with OpenCode
 
 `opencode-bridge/task-progress-bridge.ts` (installed at
-`~/.config/opencode/plugins/task-progress-bridge.ts`) watches OpenCode's event
-stream and drives the built-in task `opencode`:
+`~/.config/opencode/plugins/task-progress-bridge.ts`) mirrors three layers into
+Mandara's built-in `progress` board:
 
-| OpenCode event | Command |
-|---|---|
-| `session.execution.started` | `progress start opencode OpenCode` |
-| `permission.asked` / `form.created` | label `Needs confirmation` |
-| answer / rejection | label `OpenCode` |
-| `session.execution.succeeded` | `progress done opencode` |
-| failed / interrupted / tool failed | `progress fail opencode` |
+| Layer | Detected from | Mandara task |
+|---|---|---|
+| OpenCode turn | `session.execution.*`, `session.tool.*`, permission/form events | `opencode` |
+| OS shell process | `session.shell.*` / `shell.*` events (pid, command, exit status) plus a liveness check | `opencode-shell` |
+| Mandara board | `mandara msg --json progress list` read back every 2 min | reconciliation of both tasks |
 
-It follows one session at a time and skips duplicate commands. It is only one
-producer — CLI-reported tasks appear beside it.
+The bridge follows one session at a time. It checks the board every 2 minutes
+and refreshes a task only after 4 minutes without an update. The heartbeat uses
+`progress touch <id> [label]` (added to Mandara's built-in progress plugin):
+it bumps `updated_ms` without changing `status`, `amount` or `started_ms`, so
+the animated running light keeps going and the panel's elapsed time stays
+truthful. A task that is missing or finished is re-created with `progress start`.
+
+Tool names are tracked internally but not pushed to the label — only real
+state changes update it. `opencode-shell` stays running until the process
+actually exits, even when the agent's turn has already ended.
+
+On reload it recovers a mid-turn task from the board and still-running shells
+from the server's shell registry, so a detached build is not lost. Only state
+transitions and reconciliation actions are logged to
+`/tmp/opencode/tp-bridge-events.log`, with a layer tag — no raw event payloads.
+The bridge is only one producer — CLI-reported tasks appear beside it.
 
 ## Standalone Wasm plugin (reference)
 
