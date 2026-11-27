@@ -9,8 +9,10 @@
 // The plugin instance is server-wide, so its event stream sees every session.
 // It follows whichever sessions are actually running (confirmed against
 // /api/session/active on each beat) instead of pinning to the first session ID
-// it ever saw. The log at /tmp/opencode/tp-bridge-events.log records state
-// transitions only.
+// it ever saw. Pending questions and permission requests are part of a turn and
+// are recovered from /api/form and /api/permission/request, so a decision left
+// over from before a reload still shows on the board. The log at
+// /tmp/opencode/tp-bridge-events.log records state transitions only.
 import { execFileSync, spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 
@@ -32,6 +34,7 @@ type ShellRec = {
 let chain: Promise<void> = Promise.resolve();
 let tracked = '';
 let activeSessions = new Set<string>();
+let awaitingDecision = false;
 let turnPhase: 'idle' | 'running' = 'idle';
 let turnLabel = 'OpenCode';
 let lastTool = '';
@@ -88,19 +91,35 @@ function adopt(sid: string, started: boolean): boolean {
   return true;
 }
 
+function isRunning(): boolean {
+  return activeSessions.size > 0 || awaitingDecision;
+}
+
 function setActive(sid: string, on: boolean) {
   if (on) activeSessions.add(sid);
   else activeSessions.delete(sid);
 
-  const running = activeSessions.size > 0;
-  if (running && turnPhase !== 'running') {
+  if (isRunning() && turnPhase !== 'running') {
     turnPhase = 'running';
-    turnLabel = 'OpenCode';
-    if (!activeSessions.has(tracked)) tracked = [...activeSessions][0];
+    if (!activeSessions.has(tracked) && activeSessions.size > 0) tracked = [...activeSessions][0];
     trace('session', 'running from events');
-  } else if (!running && turnPhase === 'running') {
+  } else if (!isRunning() && turnPhase === 'running') {
     turnPhase = 'idle';
   }
+}
+
+function setDecision(pending: boolean) {
+  if (awaitingDecision === pending) return;
+  awaitingDecision = pending;
+  if (pending && turnPhase !== 'running') {
+    turnPhase = 'running';
+    trace('session', 'running from decision');
+  } else if (!pending && !isRunning() && turnPhase === 'running') {
+    turnPhase = 'idle';
+  }
+  trace('session', pending ? 'decision pending' : 'decision resolved');
+  setTurnLabel(pending ? 'Needs confirmation' : 'OpenCode');
+  ensureBeat();
 }
 
 function short(text: string, max = 48): string {
@@ -156,6 +175,16 @@ async function readActiveSessions(): Promise<string[] | undefined> {
   const data = reply?.data ?? reply;
   if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
   return Object.keys(data).filter((id) => (data[id] as any)?.type === 'running');
+}
+
+// A pending question form or permission request is part of the turn: the agent
+// is blocked on the user, not finished. Recover these on every beat so a
+// decision left over from before a reload still shows on the board.
+async function readPendingDecisions(): Promise<boolean> {
+  const [forms, perms] = await Promise.all([apiGet('/api/form'), apiGet('/api/permission/request')]);
+  const f = forms?.data ?? forms;
+  const p = perms?.data ?? perms;
+  return (Array.isArray(f) && f.length > 0) || (Array.isArray(p) && p.length > 0);
 }
 
 function alive(rec: ShellRec): boolean {
@@ -227,19 +256,20 @@ async function sync() {
   if (syncing) return;
   syncing = true;
   try {
-    const live = await readActiveSessions();
+    const [live, pending] = await Promise.all([readActiveSessions(), readPendingDecisions()]);
     if (live !== undefined) {
       activeSessions = new Set(live);
       if (activeSessions.size > 0 && !activeSessions.has(tracked)) tracked = [...activeSessions][0];
-      if (activeSessions.size > 0 && turnPhase !== 'running') {
-        turnPhase = 'running';
-        turnLabel = 'OpenCode';
-        trace('session', `running from active (${[...activeSessions].join(', ')})`);
-      } else if (activeSessions.size === 0 && turnPhase === 'running') {
-        turnPhase = 'idle';
-        trace('session', 'idle from active');
-      }
     }
+    setDecision(pending);
+    if (isRunning() && turnPhase !== 'running') {
+      turnPhase = 'running';
+      trace('session', `running from server (${[...activeSessions].join(', ') || 'decision'})`);
+    } else if (!isRunning() && turnPhase === 'running') {
+      turnPhase = 'idle';
+      trace('session', 'idle from server');
+    }
+    setTurnLabel(pending ? 'Needs confirmation' : 'OpenCode');
     reconcileBoard();
   } finally {
     syncing = false;
@@ -295,7 +325,7 @@ function handle(event: any) {
     case 'session.execution.started': {
       const sid = sessionID(event);
       if (sid) setActive(sid, true);
-      turnLabel = 'OpenCode';
+      setTurnLabel(awaitingDecision ? 'Needs confirmation' : 'OpenCode');
       emit('start', TASK, turnLabel);
       trace('session', `started ${sid}`);
       ensureBeat();
@@ -304,7 +334,7 @@ function handle(event: any) {
     case 'session.execution.succeeded': {
       const sid = sessionID(event);
       if (sid) setActive(sid, false);
-      if (activeSessions.size === 0) emit('done', TASK, 'All green');
+      if (!isRunning()) emit('done', TASK, 'All green');
       trace('session', `succeeded ${sid}`);
       ensureBeat();
       break;
@@ -312,7 +342,7 @@ function handle(event: any) {
     case 'session.execution.failed': {
       const sid = sessionID(event);
       if (sid) setActive(sid, false);
-      if (activeSessions.size === 0) emit('fail', TASK, 'Failed');
+      if (!isRunning()) emit('fail', TASK, 'Failed');
       trace('session', `failed ${sid}`);
       ensureBeat();
       break;
@@ -320,20 +350,20 @@ function handle(event: any) {
     case 'session.execution.interrupted': {
       const sid = sessionID(event);
       if (sid) setActive(sid, false);
-      if (activeSessions.size === 0) emit('fail', TASK, 'Interrupted');
+      if (!isRunning()) emit('fail', TASK, 'Interrupted');
       trace('session', `interrupted ${sid}`);
       ensureBeat();
       break;
     }
     case 'permission.asked':
     case 'form.created':
-      setTurnLabel('Needs confirmation');
+      setDecision(true);
       break;
     case 'permission.replied':
     case 'permission.rejected':
     case 'form.replied':
     case 'form.cancelled':
-      setTurnLabel('OpenCode');
+      setDecision(false);
       break;
     case 'session.tool.input.started': {
       const name = String(p.name ?? p.tool ?? '');
@@ -348,7 +378,7 @@ function handle(event: any) {
       emit('fail', TASK, 'Tool failed');
       break;
     case 'session.tool.success':
-      setTurnLabel('OpenCode');
+      setTurnLabel(awaitingDecision ? 'Needs confirmation' : 'OpenCode');
       break;
     case 'session.shell.started':
     case 'shell.created':
