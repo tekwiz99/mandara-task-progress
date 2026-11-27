@@ -6,7 +6,11 @@
 //   3. OS shell processes - shell events carry pid and exit status; a liveness
 //                           check on each beat catches a lost process
 //
-// The log at /tmp/opencode/tp-bridge-events.log records state transitions only.
+// The plugin instance is server-wide, so its event stream sees every session.
+// It follows whichever sessions are actually running (confirmed against
+// /api/session/active on each beat) instead of pinning to the first session ID
+// it ever saw. The log at /tmp/opencode/tp-bridge-events.log records state
+// transitions only.
 import { execFileSync, spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 
@@ -27,11 +31,13 @@ type ShellRec = {
 
 let chain: Promise<void> = Promise.resolve();
 let tracked = '';
+let activeSessions = new Set<string>();
 let turnPhase: 'idle' | 'running' = 'idle';
 let turnLabel = 'OpenCode';
 let lastTool = '';
 const shells = new Map<string, ShellRec>();
 let beat: ReturnType<typeof setInterval> | undefined;
+let syncing = false;
 
 function run(words: string[]) {
   // Always send: a task may have been removed since the identical command was
@@ -69,11 +75,32 @@ function sessionID(event: any): string {
   return p.sessionID ?? p.session?.id ?? '';
 }
 
-function adopt(sid: string): boolean {
+// Follow the session that just started, and accept events from any session the
+// server reports as running. Events with no sessionID (shells, forms) are global.
+function adopt(sid: string, started: boolean): boolean {
   if (!sid) return true;
-  if (tracked && sid !== tracked) return false;
+  if (started) {
+    tracked = sid;
+    return true;
+  }
+  if (tracked && sid !== tracked && !activeSessions.has(sid)) return false;
   if (!tracked) tracked = sid;
   return true;
+}
+
+function setActive(sid: string, on: boolean) {
+  if (on) activeSessions.add(sid);
+  else activeSessions.delete(sid);
+
+  const running = activeSessions.size > 0;
+  if (running && turnPhase !== 'running') {
+    turnPhase = 'running';
+    turnLabel = 'OpenCode';
+    if (!activeSessions.has(tracked)) tracked = [...activeSessions][0];
+    trace('session', 'running from events');
+  } else if (!running && turnPhase === 'running') {
+    turnPhase = 'idle';
+  }
 }
 
 function short(text: string, max = 48): string {
@@ -101,6 +128,36 @@ function readBoard(): Record<string, any> {
   }
 }
 
+function apiGet(path: string): Promise<any | undefined> {
+  return new Promise((resolve) => {
+    let out = '';
+    const child = spawn('opencode', ['api', 'get', path], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const timer = setTimeout(() => child.kill(), 4000);
+    child.stdout?.on('data', (chunk) => (out += String(chunk)));
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve(undefined);
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      try {
+        resolve(JSON.parse(out));
+      } catch {
+        resolve(undefined);
+      }
+    });
+  });
+}
+
+// Durable server-side truth for sync: a missed or reordered `execution.started`
+// must not leave the board stuck on `done` for the previous session.
+async function readActiveSessions(): Promise<string[] | undefined> {
+  const reply = await apiGet('/api/session/active');
+  const data = reply?.data ?? reply;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
+  return Object.keys(data).filter((id) => (data[id] as any)?.type === 'running');
+}
+
 function alive(rec: ShellRec): boolean {
   if (typeof rec.pid !== 'number' || rec.pid <= 0) return true;
   try {
@@ -113,7 +170,7 @@ function alive(rec: ShellRec): boolean {
 
 function ensureBeat() {
   const active = turnPhase === 'running' || shells.size > 0;
-  if (active && !beat) beat = setInterval(sync, BEAT_MS);
+  if (active && !beat) beat = setInterval(() => void sync(), BEAT_MS);
   if (!active && beat) {
     clearInterval(beat);
     beat = undefined;
@@ -127,7 +184,9 @@ function setTurnLabel(label: string) {
   trace('session', `label=${label}`);
 }
 
-function sync() {
+// Reconcile the board from the current phase. Called on every event-driven
+// transition and on each beat after the active-session check.
+function reconcileBoard() {
   const board = readBoard();
   const now = Date.now();
 
@@ -161,6 +220,29 @@ function sync() {
   } else if (task?.status === 'running') {
     emit('done', TASK, 'All green');
     trace('board', `${TASK} done (idle)`);
+  }
+}
+
+async function sync() {
+  if (syncing) return;
+  syncing = true;
+  try {
+    const live = await readActiveSessions();
+    if (live !== undefined) {
+      activeSessions = new Set(live);
+      if (activeSessions.size > 0 && !activeSessions.has(tracked)) tracked = [...activeSessions][0];
+      if (activeSessions.size > 0 && turnPhase !== 'running') {
+        turnPhase = 'running';
+        turnLabel = 'OpenCode';
+        trace('session', `running from active (${[...activeSessions].join(', ')})`);
+      } else if (activeSessions.size === 0 && turnPhase === 'running') {
+        turnPhase = 'idle';
+        trace('session', 'idle from active');
+      }
+    }
+    reconcileBoard();
+  } finally {
+    syncing = false;
   }
 }
 
@@ -199,60 +281,50 @@ function endShell(id: string, status: string, exit?: number) {
 // A reload can happen while a detached build is still running. Recover those
 // processes from the server's shell registry instead of waiting for a new event.
 async function recoverShells() {
-  await new Promise<void>((resolve) => {
-    let out = '';
-    const child = spawn('opencode', ['api', 'get', '/api/shell'], { stdio: ['ignore', 'pipe', 'ignore'] });
-    const timer = setTimeout(() => child.kill(), 4000);
-    child.stdout?.on('data', (chunk) => (out += String(chunk)));
-    child.on('error', () => {
-      clearTimeout(timer);
-      resolve();
-    });
-    child.on('close', () => {
-      clearTimeout(timer);
-      try {
-        const found = JSON.parse(out).data ?? [];
-        trace('process', `recover ${found.length}`);
-        for (const info of found) addShell(info);
-      } catch {
-        trace('process', 'recover unavailable');
-      }
-      resolve();
-    });
-  });
+  const found = (await apiGet('/api/shell'))?.data ?? [];
+  trace('process', `recover ${found.length}`);
+  for (const info of found) addShell(info);
 }
 
 function handle(event: any) {
   const type = typeof event?.type === 'string' ? event.type : '';
   const p = properties(event);
-  if (!adopt(sessionID(event))) return;
+  if (!adopt(sessionID(event), type === 'session.execution.started')) return;
 
   switch (type) {
-    case 'session.execution.started':
-      turnPhase = 'running';
+    case 'session.execution.started': {
+      const sid = sessionID(event);
+      if (sid) setActive(sid, true);
       turnLabel = 'OpenCode';
       emit('start', TASK, turnLabel);
-      trace('session', 'started');
+      trace('session', `started ${sid}`);
       ensureBeat();
       break;
-    case 'session.execution.succeeded':
-      turnPhase = 'idle';
-      emit('done', TASK, 'All green');
-      trace('session', 'succeeded');
+    }
+    case 'session.execution.succeeded': {
+      const sid = sessionID(event);
+      if (sid) setActive(sid, false);
+      if (activeSessions.size === 0) emit('done', TASK, 'All green');
+      trace('session', `succeeded ${sid}`);
       ensureBeat();
       break;
-    case 'session.execution.failed':
-      turnPhase = 'idle';
-      emit('fail', TASK, 'Failed');
-      trace('session', 'failed');
+    }
+    case 'session.execution.failed': {
+      const sid = sessionID(event);
+      if (sid) setActive(sid, false);
+      if (activeSessions.size === 0) emit('fail', TASK, 'Failed');
+      trace('session', `failed ${sid}`);
       ensureBeat();
       break;
-    case 'session.execution.interrupted':
-      turnPhase = 'idle';
-      emit('fail', TASK, 'Interrupted');
-      trace('session', 'interrupted');
+    }
+    case 'session.execution.interrupted': {
+      const sid = sessionID(event);
+      if (sid) setActive(sid, false);
+      if (activeSessions.size === 0) emit('fail', TASK, 'Interrupted');
+      trace('session', `interrupted ${sid}`);
       ensureBeat();
       break;
+    }
     case 'permission.asked':
     case 'form.created':
       setTurnLabel('Needs confirmation');
@@ -298,14 +370,10 @@ export default {
   async setup(ctx: any) {
     const controller = new AbortController();
 
-    // A reload can land mid-turn: recover the session from the board and the
-    // process layer from the server's shell registry.
-    const board = readBoard();
-    if (board[TASK]?.status === 'running') {
-      turnPhase = 'running';
-      turnLabel = String(board[TASK].label ?? 'OpenCode');
-    }
+    // A reload can land mid-turn: recover the running sessions and processes
+    // from the server, then reconcile the board before trusting any event.
     await recoverShells();
+    await sync();
     ensureBeat();
 
     void (async () => {

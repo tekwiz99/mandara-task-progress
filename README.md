@@ -65,9 +65,12 @@ Mandara's built-in `progress` board:
 | OpenCode turn | `session.execution.*`, `session.tool.*`, permission/form events | `opencode` |
 | OS shell process | `session.shell.*` / `shell.*` events (pid, command, exit status) plus a liveness check | `opencode-shell` |
 | Mandara board | `mandara msg --json progress list` read back every 2 min | reconciliation of both tasks |
+| Server session state | `/api/session/active` read on every beat and at setup | authoritative running/idle reconciliation |
 
-The bridge follows one session at a time. It checks the board every 2 minutes
-and refreshes a task only after 4 minutes without an update. The heartbeat uses
+The bridge follows whichever sessions OpenCode reports as running, switching
+when work moves to a new session — it never pins to the first session ID it
+saw. It checks the board every 2 minutes and refreshes a task only after 4
+minutes without an update. The heartbeat uses
 `progress touch <id> [label]` (added to Mandara's built-in progress plugin):
 it bumps `updated_ms` without changing `status`, `amount` or `started_ms`, so
 the animated running light keeps going and the panel's elapsed time stays
@@ -77,8 +80,10 @@ Tool names are tracked internally but not pushed to the label — only real
 state changes update it. `opencode-shell` stays running until the process
 actually exits, even when the agent's turn has already ended.
 
-On reload it recovers a mid-turn task from the board and still-running shells
-from the server's shell registry, so a detached build is not lost. Only state
+On reload it recovers the running sessions from `/api/session/active` and
+still-running shells from the server's shell registry, so a detached build or
+a missed `session.execution.started` cannot leave the board stuck on `done`.
+Only state
 transitions and reconciliation actions are logged to
 `/tmp/opencode/tp-bridge-events.log`, with a layer tag — no raw event payloads.
 The bridge is only one producer — CLI-reported tasks appear beside it.
