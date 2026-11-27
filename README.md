@@ -111,6 +111,12 @@ row stays resident instead of being gated behind `show_when_idle`. Checks:
 `no_hardcoded`, and a release build. Maintenance work happens on the local
 `perf/progress-hot-path` branch, based on the v0.40.0 tag.
 
+## Assets
+
+`assets/icon.svg`, `assets/icon.png` (256 × 256) and `assets/cover.png`
+(1600 × 900) are synced from Mandara's built-in `progress` plugin art
+(`assets/plugins/progress/` in the shell repository).
+
 ## Install
 
 ```sh
