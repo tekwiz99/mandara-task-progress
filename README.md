@@ -76,10 +76,12 @@ it bumps `updated_ms` without changing `status`, `amount` or `started_ms`, so
 the animated running light keeps going and the panel's elapsed time stays
 truthful. A task that is missing or finished is re-created with `progress start`.
 
-A pending question form or permission request is part of the turn: the label
-becomes `Needs confirmation` and the task stays running until it is answered.
-Both are recovered from `/api/form` and `/api/permission/request` on each beat,
-so a decision that was already waiting before a reload still shows up.
+A pending question form or permission request is part of the turn: the task
+goes to Mandara's `waiting` state (`mandara msg progress wait`), which holds the
+light steady amber instead of breathing while the user decides. Both are
+recovered from `/api/form` and `/api/permission/request` on each beat, so a
+decision that was already waiting before a reload still shows up; answering it
+sends `progress touch`, which resumes the same task with its elapsed time.
 
 Tool names are tracked internally but not pushed to the label — only real
 state changes update it. `opencode-shell` stays running until the process

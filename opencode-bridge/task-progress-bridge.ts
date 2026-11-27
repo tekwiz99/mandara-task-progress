@@ -10,9 +10,9 @@
 // It follows whichever sessions are actually running (confirmed against
 // /api/session/active on each beat) instead of pinning to the first session ID
 // it ever saw. Pending questions and permission requests are part of a turn and
-// are recovered from /api/form and /api/permission/request, so a decision left
-// over from before a reload still shows on the board. The log at
-// /tmp/opencode/tp-bridge-events.log records state transitions only.
+// are recovered from /api/form and /api/permission/request; they use Mandara's
+// `progress wait` state so the light holds steady instead of breathing. The log
+// at /tmp/opencode/tp-bridge-events.log records state transitions only.
 import { execFileSync, spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 
@@ -57,7 +57,7 @@ function run(words: string[]) {
 
 // `touch` bumps updated_ms without changing status, amount or started_ms, so
 // the running light keeps animating and the panel's elapsed time stays truthful.
-function emit(kind: 'start' | 'touch' | 'done' | 'fail', id: string, text: string) {
+function emit(kind: 'start' | 'wait' | 'touch' | 'done' | 'fail', id: string, text: string) {
   run(['progress', kind, id, text]);
 }
 
@@ -117,8 +117,14 @@ function setDecision(pending: boolean) {
   } else if (!pending && !isRunning() && turnPhase === 'running') {
     turnPhase = 'idle';
   }
+  turnLabel = pending ? 'Needs confirmation' : 'OpenCode';
   trace('session', pending ? 'decision pending' : 'decision resolved');
-  setTurnLabel(pending ? 'Needs confirmation' : 'OpenCode');
+  trace('session', `label=${turnLabel}`);
+  // `wait` holds the board light steady; the next `touch` resumes the same
+  // task with its elapsed time and value intact.
+  if (pending) emit('wait', TASK, turnLabel);
+  else if (isRunning()) emit('touch', TASK, turnLabel);
+  else emit('done', TASK, 'All green');
   ensureBeat();
 }
 
@@ -209,7 +215,9 @@ function ensureBeat() {
 function setTurnLabel(label: string) {
   if (turnLabel === label) return;
   turnLabel = label;
-  if (turnPhase === 'running') emit('touch', TASK, turnLabel);
+  // While a decision is pending the board label is owned by `wait`; a touch
+  // here would resume the task before the user has answered.
+  if (turnPhase === 'running' && !awaitingDecision) emit('touch', TASK, turnLabel);
   trace('session', `label=${label}`);
 }
 
@@ -238,7 +246,16 @@ function reconcileBoard() {
   }
 
   const task = board[TASK];
-  if (turnPhase === 'running') {
+  if (awaitingDecision) {
+    if (task?.status !== 'waiting' || now - Number(task.updated_ms ?? 0) > TOUCH_AFTER_MS) {
+      emit('wait', TASK, turnLabel);
+      trace('board', `${TASK} waiting refreshed`);
+    }
+  } else if (task?.status === 'waiting') {
+    if (turnPhase === 'running') emit('touch', TASK, turnLabel);
+    else emit('done', TASK, 'All green');
+    trace('board', `${TASK} resumed from waiting`);
+  } else if (turnPhase === 'running') {
     if (task?.status !== 'running') {
       emit('start', TASK, turnLabel);
       trace('board', `${TASK} restarted`);
