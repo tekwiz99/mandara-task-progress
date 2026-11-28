@@ -90,6 +90,8 @@ actually exits, even when the agent's turn has already ended.
 On reload it recovers the running sessions from `/api/session/active` and
 still-running shells from the server's shell registry, so a detached build or
 a missed `session.execution.started` cannot leave the board stuck on `done`.
+If Mandara itself restarts and empties the board, the next tool or shell event
+re-creates both tasks without waiting for the 2-minute heartbeat.
 Only state
 transitions and reconciliation actions are logged to
 `/tmp/opencode/tp-bridge-events.log`, with a layer tag — no raw event payloads.

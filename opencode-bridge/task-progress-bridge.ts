@@ -307,6 +307,9 @@ function addShell(info: any) {
   emit(running ? 'touch' : 'start', SHELL_TASK, shellLabel());
   trace('process', `+${rec.id} pid=${rec.pid ?? '?'} ${short(rec.command)}`);
   ensureBeat();
+  // Mandara can restart while OpenCode keeps working; its in-memory board is
+  // then empty. Restore the tasks on activity instead of waiting for a beat.
+  reconcileBoard();
 }
 
 function endShell(id: string, status: string, exit?: number) {
@@ -388,6 +391,7 @@ function handle(event: any) {
         lastTool = name;
         trace('tool', lastTool);
       }
+      reconcileBoard();
       break;
     }
     case 'session.tool.failed':
